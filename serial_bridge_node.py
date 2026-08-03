@@ -1,0 +1,243 @@
+#!/usr/bin/env python3
+"""
+Nó ROS 2 que substitui o micro_ros_agent: fala com a ESP32 via serial usando
+um protocolo binário simples e próprio, e republica/recebe nos mesmos
+tópicos que o firmware micro-ROS usava, para não precisar mexer no
+rosbridge/index.html.
+
+Tópicos:
+  publica  /joint_states           (sensor_msgs/JointState)
+  assina   /ptu/cmd_pos            (sensor_msgs/JointState)
+  assina   /ptu/cmd_vel            (geometry_msgs/Twist)
+  serviço  /ptu/set_zero           (std_srvs/Trigger)
+
+Parâmetros:
+  device   (string, default /dev/ttyUSB0)
+  baud     (int,    default 921600)
+  reconnect_interval_s (float, default 1.0)
+  stale_timeout_s      (float, default 1.0)
+"""
+
+import struct
+import threading
+import time
+
+import serial
+import rclpy
+from rclpy.node import Node
+from sensor_msgs.msg import JointState
+from geometry_msgs.msg import Twist
+from std_srvs.srv import Trigger
+
+SYNC1, SYNC2 = 0xA5, 0x5A
+MSG_TELEMETRY = 0x01
+MSG_CMD_POS = 0x02
+MSG_CMD_VEL = 0x03
+MSG_SET_ZERO_REQ = 0x04
+MSG_SET_ZERO_ACK = 0x05
+MSG_HEARTBEAT = 0x06
+
+
+def crc8(data: bytes) -> int:
+    crc = 0
+    for byte in data:
+        crc ^= byte
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x07) & 0xFF if (crc & 0x80) else (crc << 1) & 0xFF
+    return crc
+
+
+def build_frame(msg_type: int, payload: bytes) -> bytes:
+    header = bytes([msg_type, len(payload)])
+    crc = crc8(header + payload)
+    return bytes([SYNC1, SYNC2]) + header + payload + bytes([crc])
+
+
+class FrameParser:
+    """State machine não bloqueante, alimentada byte a byte."""
+
+    (WAIT_SYNC1, WAIT_SYNC2, WAIT_TYPE,
+     WAIT_LEN, WAIT_PAYLOAD, WAIT_CRC) = range(6)
+
+    def __init__(self, on_frame):
+        self.state = self.WAIT_SYNC1
+        self.on_frame = on_frame
+        self.type = 0
+        self.length = 0
+        self.payload = bytearray()
+
+    def feed(self, byte: int):
+        if self.state == self.WAIT_SYNC1:
+            if byte == SYNC1:
+                self.state = self.WAIT_SYNC2
+
+        elif self.state == self.WAIT_SYNC2:
+            self.state = self.WAIT_TYPE if byte == SYNC2 else self.WAIT_SYNC1
+
+        elif self.state == self.WAIT_TYPE:
+            self.type = byte
+            self.state = self.WAIT_LEN
+
+        elif self.state == self.WAIT_LEN:
+            self.length = byte
+            self.payload = bytearray()
+            self.state = self.WAIT_CRC if self.length == 0 else self.WAIT_PAYLOAD
+
+        elif self.state == self.WAIT_PAYLOAD:
+            self.payload.append(byte)
+            if len(self.payload) >= self.length:
+                self.state = self.WAIT_CRC
+
+        elif self.state == self.WAIT_CRC:
+            calc = crc8(bytes([self.type, self.length]) + bytes(self.payload))
+            if calc == byte:
+                self.on_frame(self.type, bytes(self.payload))
+            # CRC errado -> descarta silenciosamente e resincroniza
+            self.state = self.WAIT_SYNC1
+
+
+class SerialBridgeNode(Node):
+    def __init__(self):
+        super().__init__('serial_bridge_node')
+
+        self.declare_parameter('device', '/dev/ttyUSB0')
+        self.declare_parameter('baud', 921600)
+        self.declare_parameter('reconnect_interval_s', 1.0)
+        self.declare_parameter('stale_timeout_s', 1.0)
+
+        self.device = self.get_parameter('device').value
+        self.baud = self.get_parameter('baud').value
+        self.reconnect_interval = self.get_parameter('reconnect_interval_s').value
+        self.stale_timeout = self.get_parameter('stale_timeout_s').value
+
+        self.ser = None
+        self.ser_lock = threading.Lock()
+        self.parser = FrameParser(self.handle_frame)
+        self.last_rx_time = 0.0
+
+        self.zero_ack_event = threading.Event()
+        self.zero_ack_success = False
+
+        self.joint_pub = self.create_publisher(JointState, '/joint_states', 10)
+        self.create_subscription(JointState, '/ptu/cmd_pos', self.on_cmd_pos, 10)
+        self.create_subscription(Twist, '/ptu/cmd_vel', self.on_cmd_vel, 10)
+        self.create_service(Trigger, '/ptu/set_zero', self.on_set_zero)
+
+        self.create_timer(1.0, self.check_connection_health)
+        self.create_timer(0.5, self.send_heartbeat)
+
+        self.stop_event = threading.Event()
+        self.reader_thread = threading.Thread(target=self.reader_loop, daemon=True)
+        self.reader_thread.start()
+
+    # ---------------- Conexão / reconexão ----------------
+    def try_connect(self) -> bool:
+        try:
+            self.ser = serial.Serial(self.device, self.baud, timeout=0.1)
+            self.get_logger().info(f'Conectado a {self.device} @ {self.baud} bps')
+            return True
+        except serial.SerialException as e:
+            self.ser = None
+            self.get_logger().warn(f'Falha ao abrir {self.device}: {e}')
+            return False
+
+    def reader_loop(self):
+        while not self.stop_event.is_set():
+            if self.ser is None:
+                if not self.try_connect():
+                    time.sleep(self.reconnect_interval)
+                    continue
+            try:
+                data = self.ser.read(256)
+                if data:
+                    for b in data:
+                        self.parser.feed(b)
+            except (serial.SerialException, OSError) as e:
+                self.get_logger().error(f'Erro de leitura serial, reconectando: {e}')
+                self._close_serial()
+                time.sleep(self.reconnect_interval)
+
+    def _close_serial(self):
+        if self.ser:
+            try:
+                self.ser.close()
+            except Exception:
+                pass
+        self.ser = None
+
+    def check_connection_health(self):
+        if self.last_rx_time and (time.time() - self.last_rx_time) > self.stale_timeout:
+            self.get_logger().warn(
+                f'Sem dados da ESP32 há mais de {self.stale_timeout:.1f}s'
+            )
+
+    def send_heartbeat(self):
+        self.send_frame(MSG_HEARTBEAT, b'')
+
+    # ---------------- Recepção de frames vindos da ESP32 ----------------
+    def handle_frame(self, msg_type: int, payload: bytes):
+        self.last_rx_time = time.time()
+
+        if msg_type == MSG_TELEMETRY and len(payload) == 16:
+            pan_pos, pan_vel, tilt_pos, tilt_vel = struct.unpack('<ffff', payload)
+            msg = JointState()
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.name = ['pan_joint', 'tilt_joint']
+            msg.position = [pan_pos, tilt_pos]
+            msg.velocity = [pan_vel, tilt_vel]
+            self.joint_pub.publish(msg)
+
+        elif msg_type == MSG_SET_ZERO_ACK and len(payload) == 1:
+            self.zero_ack_success = bool(payload[0])
+            self.zero_ack_event.set()
+
+    # ---------------- Envio de comandos para a ESP32 ----------------
+    def send_frame(self, msg_type: int, payload: bytes):
+        if self.ser is None:
+            return
+        frame = build_frame(msg_type, payload)
+        with self.ser_lock:
+            try:
+                self.ser.write(frame)
+            except (serial.SerialException, OSError) as e:
+                self.get_logger().error(f'Falha ao escrever na serial: {e}')
+                self._close_serial()
+
+    def on_cmd_pos(self, msg: JointState):
+        pos = dict(zip(msg.name, msg.position))
+        payload = struct.pack('<ff', pos.get('pan_joint', 0.0), pos.get('tilt_joint', 0.0))
+        self.send_frame(MSG_CMD_POS, payload)
+
+    def on_cmd_vel(self, msg: Twist):
+        # mantém a mesma convenção do firmware original: angular.z = pan, angular.y = tilt
+        payload = struct.pack('<ff', msg.angular.z, msg.angular.y)
+        self.send_frame(MSG_CMD_VEL, payload)
+
+    def on_set_zero(self, request, response):
+        self.zero_ack_event.clear()
+        self.send_frame(MSG_SET_ZERO_REQ, b'')
+        got_ack = self.zero_ack_event.wait(timeout=1.0)
+        response.success = bool(got_ack and self.zero_ack_success)
+        response.message = 'Eixos zerados' if response.success else 'Sem resposta do firmware (timeout)'
+        return response
+
+    def destroy_node(self):
+        self.stop_event.set()
+        self._close_serial()
+        super().destroy_node()
+
+
+def main():
+    rclpy.init()
+    node = SerialBridgeNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
