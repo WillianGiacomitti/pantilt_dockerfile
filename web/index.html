@@ -102,6 +102,12 @@
     transition: opacity .2s ease, transform .2s ease; max-width: 90%; text-align:center;
   }
   .toast.show{ opacity:1; transform: translateX(-50%) translateY(-6px); }
+
+  .log-entry{ font-size: 12px; font-family: var(--mono); padding: 6px 8px; border-radius: 6px; background: var(--panel-2); display:flex; gap:8px; }
+  .log-entry .log-time{ color: var(--text-dim); flex-shrink:0; }
+  .log-entry.is-error{ border-left: 3px solid var(--bad); }
+  .log-entry.is-boot{ border-left: 3px solid var(--accent); }
+  .log-entry.is-info{ border-left: 3px solid var(--good); }
 </style>
 </head>
 <body>
@@ -109,7 +115,10 @@
 
   <div class="topbar">
     <h1>Controle PTU</h1>
-    <div class="pill" id="conn-pill"><span class="dot"></span><span id="conn-text">Offline</span></div>
+    <div style="display:flex; gap:8px; align-items:center;">
+      <div class="pill" id="source-pill"><span class="dot" style="background:var(--text-dim)"></span><span id="source-text">—</span></div>
+      <div class="pill" id="conn-pill"><span class="dot"></span><span id="conn-text">Offline</span></div>
+    </div>
   </div>
 
   <!-- Telemetria -->
@@ -172,6 +181,17 @@
     </div>
   </div>
 
+  <!-- Diagnóstico -->
+  <div class="card">
+    <div class="card-title">
+      <span>Diagnóstico</span>
+      <span id="err-count" style="color:var(--text-dim); font-weight:400; text-transform:none;"></span>
+    </div>
+    <div id="log-list" style="display:flex; flex-direction:column; gap:6px; max-height:160px; overflow-y:auto;">
+      <div style="color:var(--text-dim); font-size:12px;">Nenhum evento ainda.</div>
+    </div>
+  </div>
+
   <!-- Ações -->
   <div class="card">
     <div class="card-title">Ações</div>
@@ -223,9 +243,47 @@
     }
   });
 
-  const cmdPosPub = new ROSLIB.Topic({ ros, name: '/ptu/cmd_pos', messageType: 'sensor_msgs/JointState' });
-  const cmdVelPub = new ROSLIB.Topic({ ros, name: '/ptu/cmd_vel', messageType: 'geometry_msgs/Twist' });
+  const cmdPosPub = new ROSLIB.Topic({ ros, name: '/ptu/cmd_pos_web', messageType: 'sensor_msgs/JointState' });
+  const cmdVelPub = new ROSLIB.Topic({ ros, name: '/ptu/cmd_vel_web', messageType: 'geometry_msgs/Twist' });
   const setZeroClient = new ROSLIB.Service({ ros, name: '/ptu/set_zero', serviceType: 'std_srvs/Trigger' });
+
+  // ---------------- Diagnóstico (erros / boot da ESP32) ----------------
+  const errorsSub = new ROSLIB.Topic({ ros, name: '/ptu/errors', messageType: 'std_msgs/String' });
+  const logList = document.getElementById('log-list');
+  const errCountEl = document.getElementById('err-count');
+  let errCount = 0;
+  let firstLog = true;
+
+  errorsSub.subscribe((msg) => {
+    if (firstLog) { logList.innerHTML = ''; firstLog = false; }
+
+    const text = msg.data || '';
+    const isError = text.includes('ERRO');
+    const isBoot = text.includes('BOOT');
+
+    const entry = document.createElement('div');
+    entry.className = 'log-entry ' + (isError ? 'is-error' : isBoot ? 'is-boot' : 'is-info');
+    entry.textContent = text;
+    logList.prepend(entry);
+
+    while (logList.children.length > 30) logList.removeChild(logList.lastChild);
+
+    if (isError) {
+      errCount++;
+      errCountEl.textContent = errCount + ' erro(s)';
+    }
+  });
+
+  // ---------------- Fonte de controle ativa (web / joystick) ----------------
+  const activeSourceSub = new ROSLIB.Topic({ ros, name: '/ptu/active_source', messageType: 'std_msgs/String' });
+  const sourcePill = document.getElementById('source-pill');
+  const sourceText = document.getElementById('source-text');
+
+  activeSourceSub.subscribe((msg) => {
+    const src = msg.data;
+    sourceText.textContent = src === 'web' ? 'Você (Web)' : src === 'joystick' ? 'Joystick' : src;
+    sourcePill.querySelector('.dot').style.background = src === 'web' ? 'var(--good)' : 'var(--accent)';
+  });
 
   // ---------------- Posição ----------------
   function enviarPosicao() {

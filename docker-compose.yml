@@ -1,18 +1,34 @@
 services:
-  ros2_web_bridge:
+  ptu_web_bridge:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: ptu_web_bridge
+
+    # Reinicia sozinho se cair (ex: serial_bridge_node crashar) ou se o Docker
+    # daemon reiniciar (ex: reboot da máquina host).
     restart: unless-stopped
+
     ports:
-      - "8080:8080" # Interface Web
-      - "9090:9090" # ROSBridge WebSocket
-    volumes:
-      - ./web:/app/web
-    privileged: true
-    # Substitua a porta abaixo pela porta real do seu ESP32 no WSL (ex: ttyUSB0 ou ttyACM0)
+      - "8080:8080"   # interface web (index.html)
+      - "9090:9090"   # rosbridge websocket (roslib.js)
+
     devices:
+      # Ajuste os caminhos abaixo conforme aparecerem na sua máquina host.
+      # Rode `ls /dev/ttyUSB*` e `ls /dev/input/js*` no HOST (fora do container)
+      # para confirmar. Veja a explicação sobre nomes estáveis logo abaixo.
       - "/dev/ttyUSB0:/dev/ttyUSB0"
+      - "/dev/input/js0:/dev/input/js0"
+
     environment:
       - SERIAL_PORT=/dev/ttyUSB0
+      - JOY_DEVICE_ID=0
+
+    # Necessário para o joy_node conseguir abrir /dev/input/jsX (grupo "input"
+    # no host geralmente não bate 1:1 com o UID do container). Se preferir não
+    # usar privileged, veja a alternativa com group_add comentada abaixo.
+    privileged: true
+
+    # Alternativa mais restrita ao "privileged: true" acima (comente um dos dois):
+    # group_add:
+    #   - "44"   # grupo "input" no host (confira com: getent group input)

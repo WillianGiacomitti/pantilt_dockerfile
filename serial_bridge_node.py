@@ -7,9 +7,17 @@ rosbridge/index.html.
 
 Tópicos:
   publica  /joint_states           (sensor_msgs/JointState)
-  assina   /ptu/cmd_pos            (sensor_msgs/JointState)
-  assina   /ptu/cmd_vel            (geometry_msgs/Twist)
+  publica  /ptu/errors             (std_msgs/String)   - log de erros/boot da ESP32
+  publica  /ptu/active_source      (std_msgs/String)   - qual fonte está no controle agora
+  assina   /ptu/cmd_pos_web        (sensor_msgs/JointState)
+  assina   /ptu/cmd_vel_web        (geometry_msgs/Twist)
+  assina   /ptu/cmd_vel_joystick   (geometry_msgs/Twist)
   serviço  /ptu/set_zero           (std_srvs/Trigger)
+
+Arbitração: só uma fonte (web ou joystick) controla o PTU por vez. A primeira
+fonte a mandar um comando "trava" o controle por ARBITRATION_TIMEOUT_S segundos;
+comandos de outra fonte nesse intervalo são ignorados. Se a fonte ativa ficar
+em silêncio por mais que esse tempo, qualquer fonte pode assumir o controle.
 
 Parâmetros:
   device   (string, default /dev/ttyUSB0)
@@ -25,9 +33,15 @@ import time
 import serial
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
 from sensor_msgs.msg import JointState
 from geometry_msgs.msg import Twist
+from std_msgs.msg import String
 from std_srvs.srv import Trigger
+
+SOURCE_WEB = 'web'
+SOURCE_JOYSTICK = 'joystick'
+ARBITRATION_TIMEOUT_S = 0.3  # fonte fica "dona" do controle por esse tempo após o último comando
 
 SYNC1, SYNC2 = 0xA5, 0x5A
 MSG_TELEMETRY = 0x01
@@ -144,13 +158,33 @@ class SerialBridgeNode(Node):
         self.ser_lock = threading.Lock()
         self.parser = FrameParser(self.handle_frame)
         self.last_rx_time = 0.0
+        self._stale_reported = False
 
         self.zero_ack_event = threading.Event()
         self.zero_ack_success = False
+        self._last_rejection_notice_time = 0.0
+
+        # ---- Arbitração de fonte de comando ----
+        self.active_source = None
+        self.active_source_last_time = 0.0
+        self.source_lock = threading.Lock()
+
+        # QoS com histórico (transient_local) para o painel web, ao (re)conectar,
+        # já receber o(s) último(s) erro(s)/status sem precisar esperar um novo evento.
+        diagnostics_qos = QoSProfile(depth=20)
+        diagnostics_qos.reliability = QoSReliabilityPolicy.RELIABLE
+        diagnostics_qos.durability = QoSDurabilityPolicy.TRANSIENT_LOCAL
 
         self.joint_pub = self.create_publisher(JointState, '/joint_states', 10)
-        self.create_subscription(JointState, '/ptu/cmd_pos', self.on_cmd_pos, 10)
-        self.create_subscription(Twist, '/ptu/cmd_vel', self.on_cmd_vel, 10)
+        self.errors_pub = self.create_publisher(String, '/ptu/errors', diagnostics_qos)
+        self.active_source_pub = self.create_publisher(String, '/ptu/active_source', diagnostics_qos)
+
+        self.create_subscription(JointState, '/ptu/cmd_pos_web',
+                                  lambda m: self.on_cmd_pos(m, SOURCE_WEB), 10)
+        self.create_subscription(Twist, '/ptu/cmd_vel_web',
+                                  lambda m: self.on_cmd_vel(m, SOURCE_WEB), 10)
+        self.create_subscription(Twist, '/ptu/cmd_vel_joystick',
+                                  lambda m: self.on_cmd_vel(m, SOURCE_JOYSTICK), 10)
         self.create_service(Trigger, '/ptu/set_zero', self.on_set_zero)
 
         self.create_timer(1.0, self.check_connection_health)
@@ -165,6 +199,7 @@ class SerialBridgeNode(Node):
         try:
             self.ser = serial.Serial(self.device, self.baud, timeout=0.1)
             self.get_logger().info(f'Conectado a {self.device} @ {self.baud} bps')
+            self._publish_diagnostic(f'Conectado a {self.device}')
             return True
         except serial.SerialException as e:
             self.ser = None
@@ -184,6 +219,7 @@ class SerialBridgeNode(Node):
                         self.parser.feed(b)
             except (serial.SerialException, OSError) as e:
                 self.get_logger().error(f'Erro de leitura serial, reconectando: {e}')
+                self._publish_diagnostic('Conexão serial com a ESP32 perdida - reconectando...')
                 self._close_serial()
                 time.sleep(self.reconnect_interval)
 
@@ -196,10 +232,13 @@ class SerialBridgeNode(Node):
         self.ser = None
 
     def check_connection_health(self):
-        if self.last_rx_time and (time.time() - self.last_rx_time) > self.stale_timeout:
-            self.get_logger().warn(
-                f'Sem dados da ESP32 há mais de {self.stale_timeout:.1f}s'
-            )
+        stale = self.last_rx_time and (time.time() - self.last_rx_time) > self.stale_timeout
+        if stale and not self._stale_reported:
+            self.get_logger().warn(f'Sem dados da ESP32 há mais de {self.stale_timeout:.1f}s')
+            self._publish_diagnostic('Sem dados da ESP32 (conexão travada ou lenta)')
+            self._stale_reported = True
+        elif not stale:
+            self._stale_reported = False
 
     def send_heartbeat(self):
         self.send_frame(MSG_HEARTBEAT, b'')
@@ -225,6 +264,7 @@ class SerialBridgeNode(Node):
             code = payload[0]
             desc = ERROR_CODES.get(code, f'Código de erro desconhecido ({code})')
             self.get_logger().warn(f'[ESP32] Erro {code}: {desc}')
+            self._publish_diagnostic(f'ERRO {code}: {desc}')
 
         elif msg_type == MSG_BOOT_INFO and len(payload) == 5:
             reset_reason, free_heap = struct.unpack('<BI', payload)
@@ -232,6 +272,13 @@ class SerialBridgeNode(Node):
             self.get_logger().info(
                 f'[ESP32] Boot detectado - motivo do reset: {desc} | heap livre: {free_heap} bytes'
             )
+            self._publish_diagnostic(f'BOOT ({desc}) - heap livre: {free_heap} bytes')
+
+    def _publish_diagnostic(self, text: str):
+        stamp = time.strftime('%H:%M:%S')
+        msg = String()
+        msg.data = f'[{stamp}] {text}'
+        self.errors_pub.publish(msg)
 
     # ---------------- Envio de comandos para a ESP32 ----------------
     def send_frame(self, msg_type: int, payload: bytes):
@@ -245,12 +292,40 @@ class SerialBridgeNode(Node):
                 self.get_logger().error(f'Falha ao escrever na serial: {e}')
                 self._close_serial()
 
-    def on_cmd_pos(self, msg: JointState):
+    def _try_acquire(self, source: str) -> bool:
+        """Retorna True se 'source' pode enviar o comando agora (é a fonte ativa
+        ou a fonte ativa está em silêncio há tempo suficiente para trocar)."""
+        now = time.time()
+        with self.source_lock:
+            timed_out = (now - self.active_source_last_time) > ARBITRATION_TIMEOUT_S
+            if self.active_source is None or self.active_source == source or timed_out:
+                if self.active_source != source:
+                    self.get_logger().info(f'Controle assumido por: {source}')
+                    msg = String()
+                    msg.data = source
+                    self.active_source_pub.publish(msg)
+                self.active_source = source
+                self.active_source_last_time = now
+                return True
+
+            # Rejeitado - avisa no log de diagnóstico, mas no máximo 1x a cada 2s
+            if (now - self._last_rejection_notice_time) > 2.0:
+                self._publish_diagnostic(
+                    f'Comando de "{source}" ignorado - controle em uso por "{self.active_source}"'
+                )
+                self._last_rejection_notice_time = now
+            return False
+
+    def on_cmd_pos(self, msg: JointState, source: str):
+        if not self._try_acquire(source):
+            return
         pos = dict(zip(msg.name, msg.position))
         payload = struct.pack('<ff', pos.get('pan_joint', 0.0), pos.get('tilt_joint', 0.0))
         self.send_frame(MSG_CMD_POS, payload)
 
-    def on_cmd_vel(self, msg: Twist):
+    def on_cmd_vel(self, msg: Twist, source: str):
+        if not self._try_acquire(source):
+            return
         # mantém a mesma convenção do firmware original: angular.z = pan, angular.y = tilt
         payload = struct.pack('<ff', msg.angular.z, msg.angular.y)
         self.send_frame(MSG_CMD_VEL, payload)
