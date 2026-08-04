@@ -36,6 +36,36 @@ MSG_CMD_VEL = 0x03
 MSG_SET_ZERO_REQ = 0x04
 MSG_SET_ZERO_ACK = 0x05
 MSG_HEARTBEAT = 0x06
+MSG_ERROR = 0x07
+MSG_BOOT_INFO = 0x08
+
+# Precisa ficar em sincronia com os #define ERR_* em SerialProtocol.h
+ERROR_CODES = {
+    1: 'Timeout de leitura I2C no encoder PAN',
+    2: 'Timeout de leitura I2C no encoder TILT',
+    3: 'Barramento I2C estava travado - recuperação automática acionada',
+    4: 'Fail-safe acionado: motores parados por perda de comunicação',
+    5: 'Comando /ptu/cmd_pos recebido com payload inválido',
+    6: 'Comando /ptu/cmd_vel recebido com payload inválido',
+    7: 'Heap livre baixo na ESP32 (possível vazamento de memória)',
+}
+
+# Precisa ficar em sincronia com enum esp_reset_reason_t do ESP-IDF
+RESET_REASONS = {
+    0: 'ESP_RST_UNKNOWN (desconhecido)',
+    1: 'ESP_RST_POWERON (ligou/energizou normalmente)',
+    2: 'ESP_RST_EXT (reset externo via pino)',
+    3: 'ESP_RST_SW (reset via software, ex: esp_restart())',
+    4: 'ESP_RST_PANIC (crash/exceção)',
+    5: 'ESP_RST_INT_WDT (watchdog de interrupção)',
+    6: 'ESP_RST_TASK_WDT (watchdog de task - nosso watchdog pegou uma trava)',
+    7: 'ESP_RST_WDT (outro watchdog)',
+    8: 'ESP_RST_DEEPSLEEP',
+    9: 'ESP_RST_BROWNOUT (queda de tensão! checar fonte de alimentação)',
+    10: 'ESP_RST_SDIO',
+    12: 'ESP_RST_USB',
+    14: 'ESP_RST_JTAG',
+}
 
 
 def crc8(data: bytes) -> int:
@@ -190,6 +220,18 @@ class SerialBridgeNode(Node):
         elif msg_type == MSG_SET_ZERO_ACK and len(payload) == 1:
             self.zero_ack_success = bool(payload[0])
             self.zero_ack_event.set()
+
+        elif msg_type == MSG_ERROR and len(payload) == 1:
+            code = payload[0]
+            desc = ERROR_CODES.get(code, f'Código de erro desconhecido ({code})')
+            self.get_logger().warn(f'[ESP32] Erro {code}: {desc}')
+
+        elif msg_type == MSG_BOOT_INFO and len(payload) == 5:
+            reset_reason, free_heap = struct.unpack('<BI', payload)
+            desc = RESET_REASONS.get(reset_reason, f'Motivo desconhecido ({reset_reason})')
+            self.get_logger().info(
+                f'[ESP32] Boot detectado - motivo do reset: {desc} | heap livre: {free_heap} bytes'
+            )
 
     # ---------------- Envio de comandos para a ESP32 ----------------
     def send_frame(self, msg_type: int, payload: bytes):
