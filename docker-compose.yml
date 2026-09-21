@@ -17,12 +17,11 @@ services:
       # Ajuste os caminhos abaixo conforme aparecerem na sua máquina host.
       # Rode `ls /dev/ttyUSB*` e `ls /dev/input/js*` no HOST (fora do container)
       # para confirmar. Veja a explicação sobre nomes estáveis logo abaixo.
-      - "/dev/ttyUSB0:/dev/ttyUSB0"
-      - "/dev/input/js0:/dev/input/js0"
+      - /dev:/dev
 
     environment:
-      - SERIAL_PORT=/dev/ttyUSB0
-      - JOY_DEVICE_ID=0
+      - ESP32_VID_PID=10c4:ea60
+      - JOY_VID_PID=2dc8:310a
 
     # Necessário para o joy_node conseguir abrir /dev/input/jsX (grupo "input"
     # no host geralmente não bate 1:1 com o UID do container). Se preferir não
