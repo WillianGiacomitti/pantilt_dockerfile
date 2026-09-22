@@ -37,13 +37,13 @@ try {
     Write-Host "`n[2/3] Verificando status dos Containers Docker..." -ForegroundColor Yellow
 
     # Checa se existem IDs de containers rodando para este compose
-    $runningContainers = wsl -d Ubuntu bash -c "cd $wslPath && docker compose ps -q"
+    $runningContainers = wsl -d Ubuntu bash -c "cd '$wslPath' && docker compose ps -q"
 
     if ($runningContainers) {
         Write-Host "[DOCKER] Containers ja estao em execucao! Conectando ao ambiente existente..." -ForegroundColor Cyan
     } else {
         Write-Host "[DOCKER] Subindo novos containers..." -ForegroundColor Green
-        wsl -d Ubuntu bash -c "cd $wslPath && docker compose up -d"
+        wsl -d Ubuntu bash -c "cd '$wslPath' && docker compose up -d"
     }
 
     Write-Host "`n[3/3] Sistema PTU Operacional!" -ForegroundColor Green
@@ -53,11 +53,11 @@ try {
     Write-Host "----------------------------------------------------------------------`n"
 
     # Acompanha logs em tempo real
-    wsl -d Ubuntu bash -c "cd $wslPath && docker compose logs -f"
+    wsl -d Ubuntu bash -c "cd '$wslPath' && docker compose logs -f"
 
 } finally {
     Write-Host "`n`n[ENCERRANDO] Pressionado fechar/Ctrl+C. Desligando containers Docker..." -ForegroundColor Red
-    wsl -d Ubuntu bash -c "cd $wslPath && docker compose down"
+    wsl -d Ubuntu bash -c "cd '$wslPath' && docker compose down"
     Write-Host "[OK] Containers desligados com sucesso!" -ForegroundColor Green
     Start-Sleep -Seconds 2
 }
