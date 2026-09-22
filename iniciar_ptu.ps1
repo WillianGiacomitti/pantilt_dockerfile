@@ -2,12 +2,12 @@
 # Automação Avançada PTU: Gestão Multi-USB e Docker
 # ==============================================================================
 
-$wslPath = "/mnt/c/Users/Will/Desktop/TCC/2_Detector/pantilt_dockerfile"
+$wslPath = "/mnt/c/Users/Will/Desktop/TCC/2_Projeto de software/pantilt_dockerfile"
 
 # Lista de IDs de Hardware (VID:PID) dos dispositivos USB
 $hardwareIds = @(
     "10c4:ea60", # ESP32 (CP210x)
-    "2dc8:310a"  # Novo Componente
+    "2dc8:310a"  # Camera USB (VID:PID a confirmar)
 )
 
 try {

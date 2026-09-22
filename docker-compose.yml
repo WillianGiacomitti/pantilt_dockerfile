@@ -10,23 +10,22 @@ services:
     restart: unless-stopped
 
     ports:
-      - "8080:8080"   # interface web (index.html)
+      - "8080:8080"   # interface web (pantilt_web, subida manualmente via launch)
       - "9090:9090"   # rosbridge websocket (roslib.js)
+      - "8081:8081"   # web_video_server (stream de vídeo)
+
+    volumes:
+      # Workspace ROS 2 persistente, visível também no Windows via bind mount.
+      - ./ros2_ws:/ros2_ws
 
     devices:
       # Ajuste os caminhos abaixo conforme aparecerem na sua máquina host.
-      # Rode `ls /dev/ttyUSB*` e `ls /dev/input/js*` no HOST (fora do container)
-      # para confirmar. Veja a explicação sobre nomes estáveis logo abaixo.
+      # Rode `ls /dev/ttyUSB*` no HOST (fora do container) para confirmar.
       - /dev:/dev
 
     environment:
       - ESP32_VID_PID=10c4:ea60
 
-    # Necessário para o joy_node conseguir abrir /dev/input/jsX (grupo "input"
-    # no host geralmente não bate 1:1 com o UID do container). Se preferir não
-    # usar privileged, veja a alternativa com group_add comentada abaixo.
+    # Necessário para acesso à porta serial da ESP32 (grupo do host pode não
+    # bater 1:1 com o UID do container).
     privileged: true
-
-    # Alternativa mais restrita ao "privileged: true" acima (comente um dos dois):
-    # group_add:
-    #   - "44"   # grupo "input" no host (confira com: getent group input)
