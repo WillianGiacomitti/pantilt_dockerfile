@@ -21,7 +21,6 @@ services:
 
     environment:
       - ESP32_VID_PID=10c4:ea60
-      - JOY_VID_PID=2dc8:310a
 
     # Necessário para o joy_node conseguir abrir /dev/input/jsX (grupo "input"
     # no host geralmente não bate 1:1 com o UID do container). Se preferir não
