@@ -69,3 +69,14 @@ ros2 launch pantilt_bringup hardware.launch.py
 5. Comentários em português.
 6. Mudanças nos scripts `.ps1`/`.bat` devem continuar funcionando no Windows (PowerShell) e manter o caminho do WSL configurável.
 7. Ao terminar, explique o que mudou e como validar (`docker compose build`, `docker compose up -d`, `docker exec`).
+
+## Ciclo de vida do container
+
+O que é instalado ou ajustado manualmente dentro do container (Claude Code, login, histórico de chats, pacotes avulsos) vive na **camada gravável do container**, não na imagem:
+
+- `docker compose stop` / `up -d` **preservam** esse estado. É o ciclo normal de uso, e é o que o Ctrl+C do `iniciar_ptu.ps1` faz.
+- `docker compose down` e qualquer `docker compose build` que recrie o container **descartam** esse estado.
+
+Portanto: o que precisa ser permanente vai para o `Dockerfile` (ou para um volume no `docker-compose.yml`), nunca apenas dentro do container. O pin `setuptools==58.2.0` está no Dockerfile por esse motivo — precisa vir depois do `ultralytics`, porque o torch instala uma versão que quebra o `colcon`.
+
+Para reanexar a ESP32 quando o USB cai: Ctrl+C na janela do `iniciar_ptu.bat` e rodar o script de novo. O `up -d` reexecuta o entrypoint, então o `SERIAL_PORT` é re-resolvido sem perder nada.

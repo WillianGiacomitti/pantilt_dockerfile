@@ -42,22 +42,27 @@ try {
     if ($runningContainers) {
         Write-Host "[DOCKER] Containers ja estao em execucao! Conectando ao ambiente existente..." -ForegroundColor Cyan
     } else {
-        Write-Host "[DOCKER] Subindo novos containers..." -ForegroundColor Green
+        Write-Host "[DOCKER] Iniciando containers..." -ForegroundColor Green
         wsl -d Ubuntu bash -c "cd '$wslPath' && docker compose up -d"
     }
 
     Write-Host "`n[3/3] Sistema PTU Operacional!" -ForegroundColor Green
     Write-Host "----------------------------------------------------------------------"
     Write-Host " Exibindo logs em tempo real." -ForegroundColor Cyan
-    Write-Host " Para desligar os containers e fechar, pressione [Ctrl + C]." -ForegroundColor White
+    Write-Host " Para parar os containers e fechar, pressione [Ctrl + C]." -ForegroundColor White
+    Write-Host " O container e apenas parado, nao destruido: o que voce instalou" -ForegroundColor White
+    Write-Host " dentro dele continua la na proxima vez que subir." -ForegroundColor White
     Write-Host "----------------------------------------------------------------------`n"
 
     # Acompanha logs em tempo real
     wsl -d Ubuntu bash -c "cd '$wslPath' && docker compose logs -f"
 
 } finally {
-    Write-Host "`n`n[ENCERRANDO] Pressionado fechar/Ctrl+C. Desligando containers Docker..." -ForegroundColor Red
-    wsl -d Ubuntu bash -c "cd '$wslPath' && docker compose down"
-    Write-Host "[OK] Containers desligados com sucesso!" -ForegroundColor Green
+    Write-Host "`n`n[ENCERRANDO] Pressionado fechar/Ctrl+C. Parando containers Docker..." -ForegroundColor Red
+    # "stop" em vez de "down": preserva o container e tudo que foi instalado
+    # dentro dele (ex: Claude Code, login e chats). "down" destruiria a camada
+    # gravavel e esse estado seria perdido.
+    wsl -d Ubuntu bash -c "cd '$wslPath' && docker compose stop"
+    Write-Host "[OK] Containers parados (preservados) com sucesso!" -ForegroundColor Green
     Start-Sleep -Seconds 2
 }

@@ -12,6 +12,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && pip3 install --no-cache-dir pyserial ultralytics "numpy<2" \
     && rm -rf /var/lib/apt/lists/*
 
+# Deve vir DEPOIS do ultralytics: o torch puxa setuptools 84, que quebra o
+# colcon (exige <80). 58.2.0 é a versão recomendada para o ROS 2 Humble.
+RUN pip3 install --no-cache-dir setuptools==58.2.0
+
 WORKDIR /app
 
 # Script de inicialização (mantido como arquivo separado, não inline no Dockerfile)
