@@ -20,12 +20,22 @@ services:
 
     devices:
       # Ajuste os caminhos abaixo conforme aparecerem na sua máquina host.
-      # Rode `ls /dev/ttyUSB*` no HOST (fora do container) para confirmar.
+      # Rode `ls /dev/ttyUSB*` e `ls /dev/video*` no HOST (fora do container)
+      # para confirmar.
       - /dev:/dev
 
     environment:
       - ESP32_VID_PID=10c4:ea60
+      # Perfil do Fast DDS (SHM de 10 MB). Precisa valer para TODO processo ROS
+      # do container (nós, launch, ros2 CLI, daemon), por isso fica aqui e não
+      # em um launch file. O arquivo vem do pantilt_ros clonado no volume.
+      - FASTRTPS_DEFAULT_PROFILES_FILE=/ros2_ws/src/pantilt_ros/pantilt_bringup/config/fastdds.xml
+
+    # O padrão do Docker (64 MB) não comporta ~10 MB de SHM por processo ROS.
+    # Sem espaço, o Fast DDS volta para UDP fragmentado e as imagens perdem quadros.
+    shm_size: "1gb"
 
     # Necessário para acesso à porta serial da ESP32 (grupo do host pode não
-    # bater 1:1 com o UID do container).
+    # bater 1:1 com o UID do container). Também faz uma câmera anexada DEPOIS
+    # de o container subir aparecer em /dev/video*.
     privileged: true

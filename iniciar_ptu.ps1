@@ -7,7 +7,7 @@ $wslPath = "/mnt/c/Users/Will/Desktop/TCC/2_Projeto de software/pantilt_dockerfi
 # Lista de IDs de Hardware (VID:PID) dos dispositivos USB
 $hardwareIds = @(
     "10c4:ea60", # ESP32 (CP210x)
-    "2dc8:310a"  # Camera USB (VID:PID a confirmar)
+    "5258:4a55"  # Camera USB (USB Camera, USB Audio)
 )
 
 try {
@@ -17,21 +17,34 @@ try {
     $usbList = usbipd list
 
     foreach ($id in $hardwareIds) {
-        $espDevice = $usbList | Select-String $id
+        $linha = $usbList | Select-String $id | Select-Object -First 1
 
-        if (-not $espDevice) {
+        if (-not $linha) {
             Write-Host "[AVISO] Dispositivo ($id) nao encontrado na USB do Windows!" -ForegroundColor Yellow
             continue
         }
 
+        $texto = $linha.Line
+
         # Checa se o dispositivo ja esta anexado ao WSL
-        if ($espDevice -match "Attached") {
+        if ($texto -match "Attached") {
             Write-Host "[USB] Dispositivo ($id) ja esta anexado ao WSL." -ForegroundColor Cyan
-        } else {
-            Write-Host "[USB] Anexando dispositivo ($id) ao WSL..." -ForegroundColor Green
-            usbipd attach --wsl --hardware-id $id
-            Start-Sleep -Seconds 1
+            continue
         }
+
+        # "Not shared": falta o bind, que exige PowerShell como administrador e
+        # so precisa ser feito uma vez por dispositivo. Sem ele o attach falha.
+        if ($texto -match "Not shared") {
+            $busid = ($texto -split "\s+")[0]
+            Write-Host "[AVISO] Dispositivo ($id) esta 'Not shared' - o attach vai falhar." -ForegroundColor Yellow
+            Write-Host "        Rode UMA VEZ, em um PowerShell como administrador:" -ForegroundColor Yellow
+            Write-Host "          usbipd bind --busid $busid" -ForegroundColor White
+            continue
+        }
+
+        Write-Host "[USB] Anexando dispositivo ($id) ao WSL..." -ForegroundColor Green
+        usbipd attach --wsl --hardware-id $id
+        Start-Sleep -Seconds 1
     }
 
     Write-Host "`n[2/3] Verificando status dos Containers Docker..." -ForegroundColor Yellow

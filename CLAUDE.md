@@ -13,7 +13,8 @@ Ambiente Docker do TCC (controle servo visual pan-tilt). Este repositório cont�
 - Windows + WSL2 (Ubuntu) + Docker.
 - Dispositivos USB repassados ao WSL com `usbipd` (scripts `iniciar_ptu.ps1` e `iniciar_ptu.bat`):
   - ESP32 (CP210x): VID:PID `10c4:ea60`;
-  - câmera USB: ainda a definir. O kernel padrão do WSL2 normalmente não tem driver UVC; a alternativa é fazer stream MJPEG a partir do Windows.
+  - câmera USB: VID:PID `5258:4a55`. Com o kernel atual do WSL2 (6.18) o driver UVC está presente e ela aparece como `/dev/video0`, entregando 640×480 MJPG a até 30 fps. Para máquinas cujo kernel não tenha UVC, a alternativa é fazer stream MJPEG a partir do Windows (`source: "http://..."` no `camera_node`).
+- Dispositivos precisam de `usbipd bind --busid <BUSID>` uma vez, em PowerShell como administrador, antes que o `iniciar_ptu.ps1` consiga anexá-los.
 - O entrypoint resolve a porta serial da ESP32 pelo VID:PID.
 
 ## Estado alvo (a implementar)
@@ -29,7 +30,9 @@ Ambiente Docker do TCC (controle servo visual pan-tilt). Este repositório cont�
 
 - Volume `./ros2_ws:/ros2_ws`, para que as alterações persistam e fiquem visíveis no Windows.
 - Portas: 8080 (web), 9090 (rosbridge), 8081 (web_video_server).
-- Manter `/dev:/dev` e `privileged: true` (acesso à serial).
+- Manter `/dev:/dev` e `privileged: true` (acesso à serial e a `/dev/video*`).
+- `FASTRTPS_DEFAULT_PROFILES_FILE` apontando para o `fastdds.xml` do `pantilt_ros`: o perfil precisa valer para **todo** processo ROS do container, não só para os nós de um launch.
+- `shm_size: "1gb"`: cada processo ROS reserva ~10 MB de SHM, e os 64 MB padrão do Docker não comportam o sistema completo. Sem espaço, o Fast DDS cai para UDP fragmentado e as imagens perdem quadros.
 - Remover `JOY_VID_PID`.
 
 **entrypoint.sh**

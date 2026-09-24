@@ -62,6 +62,16 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Confere o perfil do Fast DDS. Sem ele o Fast DDS apenas loga XMLPARSER Error
+# e segue com os padrões (SHM de 512 KB), então a perda de quadros passaria
+# despercebida.
+# ---------------------------------------------------------------------------
+if [ -n "$FASTRTPS_DEFAULT_PROFILES_FILE" ] && [ ! -f "$FASTRTPS_DEFAULT_PROFILES_FILE" ]; then
+    echo "[entrypoint] AVISO: perfil do Fast DDS nao encontrado em $FASTRTPS_DEFAULT_PROFILES_FILE."
+    echo "[entrypoint]        Imagens grandes podem perder quadros (ver ajustes_pantilt_dockerfile.md)."
+fi
+
+# ---------------------------------------------------------------------------
 # Nenhum nó ROS é iniciado automaticamente. Entre com
 # "docker exec -it ptu_web_bridge bash", builde o workspace e dê o launch
 # manualmente (ver fluxo de uso no CLAUDE.md).
