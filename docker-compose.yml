@@ -3,39 +3,64 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        HOST_UID: ${HOST_UID:-1000}
+        HOST_GID: ${HOST_GID:-1000}
     container_name: ptu_web_bridge
 
-    # Reinicia sozinho se cair (ex: serial_bridge_node crashar) ou se o Docker
-    # daemon reiniciar (ex: reboot da máquina host).
+    # Reinicia sozinho se cair ou se o Docker daemon reiniciar (reboot do host).
     restart: unless-stopped
 
-    ports:
-      - "8080:8080"   # interface web (pantilt_web, subida manualmente via launch)
-      - "9090:9090"   # rosbridge websocket (roslib.js)
-      - "8081:8081"   # web_video_server (stream de vídeo)
+    # Rede do host: as portas 8080 (interface web, pantilt_web), 9090 (rosbridge)
+    # e 8081 (web_video_server) ficam acessíveis direto em localhost, sem "ports:".
+    network_mode: host
+
+    # Mesmo UID do host: o ./ros2_ws fica com o seu dono. Os GIDs de dialout e
+    # video do host permitem abrir /dev/ttyUSB* e /dev/video* sem ser root.
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    group_add:
+      - "${DIALOUT_GID:-20}"
+      - "${VIDEO_GID:-44}"
 
     volumes:
-      # Workspace ROS 2 persistente, visível também no Windows via bind mount.
+      # Workspace ROS 2 persistente, visível também no host (bind mount).
+      # A pasta precisa existir antes do "up" (o iniciar_ptu.sh cria), senão o
+      # Docker a cria como root.
       - ./ros2_ws:/ros2_ws
+      # Socket do X11, para abrir rqt/rviz na tela do host.
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
 
     devices:
-      # Ajuste os caminhos abaixo conforme aparecerem na sua máquina host.
-      # Rode `ls /dev/ttyUSB*` e `ls /dev/video*` no HOST (fora do container)
-      # para confirmar.
+      # Acesso à serial da ESP32 e às câmeras /dev/video*.
       - /dev:/dev
 
     environment:
       - ESP32_VID_PID=10c4:ea60
+      - CAMERA_VID_PID=5258:4a55
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
       # Perfil do Fast DDS (SHM de 10 MB). Precisa valer para TODO processo ROS
       # do container (nós, launch, ros2 CLI, daemon), por isso fica aqui e não
       # em um launch file. O arquivo vem do pantilt_ros clonado no volume.
       - FASTRTPS_DEFAULT_PROFILES_FILE=/ros2_ws/src/pantilt_ros/pantilt_bringup/config/fastdds.xml
+      # GUI via X11
+      - DISPLAY=${DISPLAY:-:0}
+      - QT_X11_NO_MITSHM=1
+      # GPU NVIDIA (ultralytics/torch)
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
     # O padrão do Docker (64 MB) não comporta ~10 MB de SHM por processo ROS.
     # Sem espaço, o Fast DDS volta para UDP fragmentado e as imagens perdem quadros.
     shm_size: "1gb"
 
-    # Necessário para acesso à porta serial da ESP32 (grupo do host pode não
-    # bater 1:1 com o UID do container). Também faz uma câmera anexada DEPOIS
-    # de o container subir aparecer em /dev/video*.
+    # Requer nvidia-container-toolkit no host.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    # Mantém o acesso a /dev e a câmeras plugadas depois que o container subiu.
     privileged: true

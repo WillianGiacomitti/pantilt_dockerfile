@@ -34,6 +34,34 @@ get_serial_by_vid_pid() {
     return 1
 }
 
+# Busca o nó de captura /dev/videoN de uma câmera USB pelo VID:PID. Cada câmera
+# UVC expõe vários nós (captura + metadados); o de captura tem index 0.
+get_video_by_vid_pid() {
+    local target_vid_pid="$1"
+    local vid="${target_vid_pid%%:*}"
+    local pid="${target_vid_pid##*:}"
+
+    for sys_dev in /sys/class/video4linux/video*; do
+        [ -e "$sys_dev" ] || continue
+        [ "$(cat "$sys_dev/index" 2>/dev/null)" = "0" ] || continue
+        local dev_dir
+        dev_dir=$(readlink -f "$sys_dev/device" 2>/dev/null) || continue
+
+        while [ "$dev_dir" != "/" ] && [ -n "$dev_dir" ]; do
+            if [ -f "$dev_dir/idVendor" ] && [ -f "$dev_dir/idProduct" ]; then
+                local v=$(cat "$dev_dir/idVendor" 2>/dev/null)
+                local p=$(cat "$dev_dir/idProduct" 2>/dev/null)
+                if [ "$v" = "$vid" ] && [ "$p" = "$pid" ]; then
+                    echo "/dev/$(basename "$sys_dev")"
+                    return 0
+                fi
+            fi
+            dev_dir=$(dirname "$dev_dir")
+        done
+    done
+    return 1
+}
+
 # ---------------------------------------------------------------------------
 # Resolução dinâmica da porta serial da ESP32
 # ---------------------------------------------------------------------------
@@ -50,11 +78,27 @@ fi
 export SERIAL_PORT
 
 # ---------------------------------------------------------------------------
+# Resolução dinâmica da câmera USB (o número do /dev/videoN varia, por exemplo
+# por causa da webcam integrada do notebook)
+# ---------------------------------------------------------------------------
+CAMERA_VID_PID="${CAMERA_VID_PID:-5258:4a55}"
+
+RESOLVED_CAMERA=$(get_video_by_vid_pid "$CAMERA_VID_PID" || true)
+if [ -z "$RESOLVED_CAMERA" ]; then
+    echo "[entrypoint] AVISO: camera ($CAMERA_VID_PID) nao encontrada via VID:PID. Usando fallback /dev/video0"
+    CAMERA_DEVICE="${CAMERA_DEVICE:-/dev/video0}"
+else
+    CAMERA_DEVICE="$RESOLVED_CAMERA"
+    echo "[entrypoint] Camera identificada via VID:PID ($CAMERA_VID_PID) em: $CAMERA_DEVICE"
+fi
+export CAMERA_DEVICE
+
+# ---------------------------------------------------------------------------
 # Clona o workspace ROS 2 (pantilt_ros) caso ainda não exista no bind mount
 # ---------------------------------------------------------------------------
 if [ ! -d "/ros2_ws/src/pantilt_ros" ]; then
     echo "[entrypoint] /ros2_ws/src/pantilt_ros nao encontrado. Clonando repositorio..."
-    mkdir -p /ros2_ws/src
+    mkdir -p /ros2_ws/src || echo "[entrypoint] AVISO: sem permissao em /ros2_ws. Crie ./ros2_ws no host antes do 'up' (o iniciar_ptu.sh faz isso)."
     git clone https://github.com/WillianGiacomitti/pantilt_ros /ros2_ws/src/pantilt_ros \
         || echo "[entrypoint] AVISO: falha ao clonar pantilt_ros. Verifique rede/URL e clone manualmente se necessario."
 else
