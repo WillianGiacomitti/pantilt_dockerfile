@@ -1,0 +1,16 @@
+# Override para hosts com GPU NVIDIA (ultralytics/torch com CUDA).
+# Requer nvidia-container-toolkit no host. O iniciar_ptu.sh o inclui
+# automaticamente quando detecta a GPU; manualmente:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+services:
+  ptu_web_bridge:
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

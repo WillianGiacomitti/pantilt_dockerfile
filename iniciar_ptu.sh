@@ -31,6 +31,16 @@ if command -v xhost >/dev/null 2>&1 && [ -n "$DISPLAY" ]; then
     xhost +local: >/dev/null 2>&1 || echo "[AVISO] xhost falhou; GUI pode nao abrir."
 fi
 
+# Inclui o override de GPU só se o host tiver NVIDIA e o runtime no Docker.
+# COMPOSE_FILE vale para todos os "docker compose" abaixo (up, stop, logs).
+export COMPOSE_FILE="docker-compose.yml"
+if command -v nvidia-smi >/dev/null 2>&1 && docker info 2>/dev/null | grep -qi nvidia; then
+    export COMPOSE_FILE="docker-compose.yml:docker-compose.gpu.yml"
+    echo "[GPU] NVIDIA detectada; usando docker-compose.gpu.yml."
+else
+    echo "[GPU] NVIDIA nao detectada; rodando em CPU."
+fi
+
 echo "[2/3] Verificando dispositivos USB..."
 for id in "$ESP32_VID_PID" "$CAMERA_VID_PID"; do
     if lsusb -d "$id" >/dev/null 2>&1; then

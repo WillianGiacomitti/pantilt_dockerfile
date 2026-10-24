@@ -45,22 +45,12 @@ services:
       # GUI via X11
       - DISPLAY=${DISPLAY:-:0}
       - QT_X11_NO_MITSHM=1
-      # GPU NVIDIA (ultralytics/torch)
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
     # O padrão do Docker (64 MB) não comporta ~10 MB de SHM por processo ROS.
     # Sem espaço, o Fast DDS volta para UDP fragmentado e as imagens perdem quadros.
     shm_size: "1gb"
 
-    # Requer nvidia-container-toolkit no host.
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+    # GPU NVIDIA: ver docker-compose.gpu.yml (usado só se o host tiver GPU).
 
     # Mantém o acesso a /dev e a câmeras plugadas depois que o container subiu.
     privileged: true
